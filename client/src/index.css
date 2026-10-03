@@ -568,6 +568,26 @@ body {
   color: #e2e8f0;
 }
 
+.chat-input-form input {
+  min-width: 0;
+}
+.chat-input-form button {
+  flex-shrink: 0;
+}
+.chat-header {
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.session-tag {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.chat-widget-container {
+  max-width: 100%;
+}
+
 
 @media (max-width: 600px) {
   .navbar {
