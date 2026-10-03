@@ -94,6 +94,28 @@ export async function executeToolCall(name, args) {
   }
 }
 
+const GEMINI_MODELS = [
+  process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+  process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.8-flash-lite',
+];
+
+async function generateWithRetry(ai, params) {
+  let lastErr;
+  for (const model of GEMINI_MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await ai.models.generateContent({ ...params, model });
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err.message || '');
+        const retryable = /503|UNAVAILABLE|429|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(msg);
+        if (!retryable) throw err;
+        await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
 /**
  * Router Agent
  * Classifies input message into { intent, confidence }
@@ -108,15 +130,21 @@ export async function routeMessage(message, sessionId = 'default-session') {
   if (process.env.GEMINI_API_KEY) {
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+      const response = await generateWithRetry(ai, {
         contents: [
           {
             role: 'user',
             parts: [
               {
-                text: `Classify the following patient message into exactly one of these intents: "book", "reschedule", "intake", "insurance", "other".
-Return JSON format ONLY: {"intent": "<intent>", "confidence": <number between 0.0 and 1.0>}.
+                text: `You classify messages sent to a medical clinic's front-desk assistant.
+Choose exactly one intent:
+- "book": wants to schedule, see a doctor, or asks about appointment availability or a specific doctor's time.
+- "reschedule": wants to move, change, postpone, or cancel an existing appointment.
+- "intake": describes ANY symptom, pain, illness, injury, or medical history, even casually (e.g. "my head hurts", "I feel dizzy", "I've had a cough since Monday").
+- "insurance": asks about insurance, coverage, copay, or a policy number.
+- "other": ONLY unrelated chat, greetings, clinic location/hours/parking, or off-topic questions.
+If a message describes how the patient feels physically, it is "intake", never "other".
+Return JSON only: {"intent": "<intent>", "confidence": <number between 0.0 and 1.0>}
 Message: "${message}"`,
               },
             ],
@@ -127,6 +155,10 @@ Message: "${message}"`,
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         classification = JSON.parse(jsonMatch[0]);
+        const kwIntake = /\b(hurts?|pain|ache|aching|fever|cough|nausea|dizzy|headache|symptoms?|sick|vomit\w*|rash|sore)\b/i.test(msgLower);
+        if (classification.intent === 'other' && kwIntake) {
+          classification = { intent: 'intake', confidence: 0.8 };
+        }
       }
     } catch (err) {
       console.warn('Gemini Router call error, using pattern classifier:', err.message);
@@ -144,7 +176,7 @@ Message: "${message}"`,
       msgLower.includes('schedule') ||
       msgLower.includes('slot') ||
       msgLower.includes('reserve') ||
-      msgLower.includes('dr.') ||
+      /\bdr\b\.?/.test(msgLower) ||
       msgLower.includes('doctor') ||
       msgLower.includes('cardiology') ||
       msgLower.includes('pediatrics')
@@ -180,7 +212,7 @@ Message: "${message}"`,
       classification = { intent: 'intake', confidence: 0.92 };
     } else if (
       msgLower.includes('hello') ||
-      msgLower.includes('hi') ||
+      /\bhi\b/.test(msgLower) ||
       msgLower.includes('what is the weather') ||
       msgLower.includes('random') ||
       msgLower.includes('who are you') ||
@@ -209,6 +241,82 @@ Message: "${message}"`,
   });
 
   return classification;
+}
+
+// In-memory conversation state per session (resets if the server restarts)
+const sessionState = new Map();
+
+async function handleBookingConversation(state, message) {
+  const text = (message || '').trim();
+
+  if (/^(cancel|stop|quit)$/i.test(text)) {
+    state.step = null;
+    return 'Okay, I have cancelled this booking. Let me know if you need anything else.';
+  }
+
+  switch (state.step) {
+    case 'name':
+      if (text.length < 2) return 'Please enter your full name.';
+      state.data.name = text;
+      state.step = 'email';
+      return `Thanks, ${text}. What is your email address?`;
+
+    case 'email':
+      if (!/^\S+@\S+\.\S+$/.test(text)) return 'That email looks invalid. Please enter a valid email address.';
+      state.data.email = text.toLowerCase();
+      state.step = 'phone';
+      return 'And your phone number?';
+
+    case 'phone':
+      if (text.replace(/\D/g, '').length < 7) return 'Please enter a valid phone number.';
+      state.data.phone = text;
+      state.step = 'telegram';
+      return 'Optional: your Telegram username, or type "skip".';
+
+    case 'telegram': {
+      if (!/^skip$/i.test(text)) state.data.telegramUsername = text.replace(/^@/, '');
+      state.step = 'confirm';
+      const s = state.slot;
+      const when = new Date(s.startTime).toLocaleString('en-PK', { timeZone: 'Asia/Karachi' });
+      return (
+        `Please confirm your appointment:\n` +
+        `Doctor: ${s.doctorName} (${s.specialty})\nTime: ${when}\n` +
+        `Name: ${state.data.name}\nEmail: ${state.data.email}\nPhone: ${state.data.phone}\n\n` +
+        `Reply YES to confirm or NO to cancel.`
+      );
+    }
+
+    case 'confirm': {
+      if (/^(y|yes|confirm|ok|okay)$/i.test(text)) {
+        try {
+          const update = { name: state.data.name, phone: state.data.phone };
+          if (state.data.telegramUsername) update.telegramUsername = state.data.telegramUsername;
+          const patient = await Patient.findOneAndUpdate(
+            { email: state.data.email },
+            update,
+            { new: true, upsert: true, setDefaultsOnInsert: true }
+          );
+          await bookSlot({ slotId: state.slot.id, patientId: patient._id.toString(), reason: state.reason });
+          state.patientId = patient._id.toString();
+          state.step = null;
+          const when = new Date(state.slot.startTime).toLocaleString('en-PK', { timeZone: 'Asia/Karachi' });
+          return `Confirmed! Your appointment with ${state.slot.doctorName} is booked for ${when}. You can now tell me your symptoms for the doctor.`;
+        } catch (err) {
+          state.step = null;
+          return 'Sorry, that slot was just taken. Please ask me to book again and I will find another one.';
+        }
+      }
+      if (/^(n|no)$/i.test(text)) {
+        state.step = null;
+        return 'No problem, the booking was not made. Let me know if you want another time.';
+      }
+      return 'Please reply YES to confirm or NO to cancel.';
+    }
+
+    default:
+      state.step = null;
+      return null;
+  }
 }
 
 /**
@@ -248,6 +356,26 @@ export async function processAgentMessage({ message, sessionId = 'default-sessio
     };
   }
 
+  // Booking conversation in progress: skip routing and continue collecting details
+  let state = sessionState.get(sessionId);
+  if (!state) {
+    state = { step: null, data: {}, patientId: null };
+    sessionState.set(sessionId, state);
+  }
+  if (!patientId && state.patientId) patientId = state.patientId;
+
+  if (state.step) {
+    const reply = await handleBookingConversation(state, message);
+    if (reply) {
+      if (state.patientId) patientId = state.patientId;
+      await AgentTrace.create({
+        sessionId, agentName: 'Scheduler', intent: 'book', confidence: 1.0,
+        input: message, output: reply, toolCalls: [],
+      });
+      return { reply, agentName: 'Scheduler', intent: 'book', confidence: 1.0, escalated: false };
+    }
+  }
+
   // 2. Classify intent via Router
   const routing = await routeMessage(message, sessionId);
 
@@ -275,6 +403,35 @@ export async function processAgentMessage({ message, sessionId = 'default-sessio
     };
   }
 
+  // Start details collection when a new patient wants to book
+  if ((routing.intent === 'book' || routing.intent === 'reschedule') && !patientId) {
+    const slots = await getSlots();
+    if (slots.length === 0) {
+      return {
+        reply: 'Currently there are no open appointment slots. Please check back later.',
+        agentName: 'Scheduler', intent: routing.intent, confidence: routing.confidence, escalated: false,
+      };
+    }
+    state.step = 'name';
+    state.data = {};
+    state.slot = slots[0];
+    state.reason = message;
+    const reply = 'I can help you book that. First, what is your full name?';
+    await AgentTrace.create({
+      sessionId, agentName: 'Scheduler', intent: routing.intent, confidence: routing.confidence,
+      input: message, output: reply, toolCalls: [{ toolName: 'getSlots', args: {}, result: [slots[0]] }],
+    });
+    return { reply, agentName: 'Scheduler', intent: routing.intent, confidence: routing.confidence, escalated: false };
+  }
+
+  if (routing.intent === 'intake' && !patientId) {
+    const reply = 'Please book an appointment first so I can link your symptoms to you.';
+    await AgentTrace.create({
+      sessionId, agentName: 'Intake', intent: 'intake', confidence: routing.confidence,
+      input: message, output: reply, toolCalls: [],
+    });
+    return { reply, agentName: 'Intake', intent: 'intake', confidence: routing.confidence, escalated: false };
+  }
   // Select Specialist Agent
   let agentName = 'Scheduler';
   let allowedTools = ['getSlots', 'bookSlot'];
@@ -300,15 +457,14 @@ export async function processAgentMessage({ message, sessionId = 'default-sessio
       let chatContents = [
         {
           role: 'user',
-          parts: [{ text: `${SAFETY_SYSTEM_PROMPT}\nPatient message: ${message}` }],
+          parts: [{ text: `${SAFETY_SYSTEM_PROMPT}\nPatient ID: ${patientId || 'unknown'}\nPatient message: ${message}` }],
         },
       ];
 
       let turns = 0;
       while (turns < 3) {
         turns++;
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+        const response = await generateWithRetry(ai, {
           contents: chatContents,
           config: {
             tools: [{ functionDeclarations: filteredDeclarations }],
@@ -346,10 +502,6 @@ export async function processAgentMessage({ message, sessionId = 'default-sessio
         const firstSlot = slots[0];
         let pId = patientId;
 
-        if (!pId) {
-          const samplePatient = await Patient.findOne();
-          pId = samplePatient ? samplePatient._id.toString() : null;
-        }
 
         if (pId) {
           const booking = await bookSlot({
@@ -379,19 +531,28 @@ export async function processAgentMessage({ message, sessionId = 'default-sessio
         finalReply = `Policy ${policyNumber} was not found or is inactive in our insurance system. Please contact your provider.`;
       }
     } else if (routing.intent === 'intake') {
-      let pId = patientId;
-      if (!pId) {
-        const samplePatient = await Patient.findOne();
-        pId = samplePatient ? samplePatient._id.toString() : null;
-      }
-
-      const intakeRes = await saveIntake({
-        patientId: pId || 'default-patient',
-        symptoms: [message],
-      });
-      executedToolCalls.push({ toolName: 'saveIntake', args: { patientId: pId, symptoms: [message] }, result: intakeRes });
+      const intakeRes = await saveIntake({ patientId, symptoms: [message] });
+      executedToolCalls.push({ toolName: 'saveIntake', args: { patientId, symptoms: [message] }, result: intakeRes });
       finalReply = 'Thank you for providing your intake information. Your symptoms have been logged for the doctor.';
     }
+    // }
+    // else if (routing.intent === 'intake') {
+    //   let pId = patientId;
+    //   if (!pId) {
+    //     finalReply = 'Please book an appointment first so I can link your symptoms to you.';
+    //   } else {
+    //     const intakeRes = await saveIntake({ patientId: pId, symptoms: [message] });
+    //     executedToolCalls.push({ toolName: 'saveIntake', args: { patientId: pId, symptoms: [message] }, result: intakeRes });
+    //     finalReply = 'Thank you for providing your intake information. Your symptoms have been logged for the doctor.';
+    //   }
+
+    // const intakeRes = await saveIntake({
+    //   patientId: pId || 'default-patient',
+    //   symptoms: [message],
+    // });
+    // executedToolCalls.push({ toolName: 'saveIntake', args: { patientId: pId, symptoms: [message] }, result: intakeRes });
+    // finalReply = 'Thank you for providing your intake information. Your symptoms have been logged for the doctor.';
+    // }
   }
 
   // Log trace to agent_traces
