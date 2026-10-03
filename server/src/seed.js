@@ -4,6 +4,9 @@ import { connectDB } from './db.js';
 import { Doctor } from './models/Doctor.js';
 import { Patient } from './models/Patient.js';
 import { Slot } from './models/Slot.js';
+import { Appointment } from './models/Appointment.js';
+import { Intake } from './models/Intake.js';
+import { AgentTrace } from './models/AgentTrace.js';
 
 dotenv.config();
 
@@ -83,36 +86,24 @@ export async function seedDB() {
   console.log('Seeding database...');
   await connectDB();
 
+  // Clear collections for complete idempotency
+  await Doctor.deleteMany({});
+  await Patient.deleteMany({});
+  await Slot.deleteMany({});
+  await Appointment.deleteMany({});
+  await Intake.deleteMany({});
+  await AgentTrace.deleteMany({});
+
   // 1. Seed Doctors (3 doctors)
-  const seededDoctors = [];
-  for (const docData of initialDoctors) {
-    const doc = await Doctor.findOneAndUpdate(
-      { email: docData.email },
-      docData,
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    seededDoctors.push(doc);
-  }
-  console.log(`Seeded ${seededDoctors.length} doctors.`);
+  const seededDoctors = await Doctor.insertMany(initialDoctors);
 
   // 2. Seed Patients (5 fake patients)
-  const seededPatients = [];
-  for (const patientData of initialPatients) {
-    const patient = await Patient.findOneAndUpdate(
-      { email: patientData.email },
-      patientData,
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    seededPatients.push(patient);
-  }
-  console.log(`Seeded ${seededPatients.length} patients.`);
+  const seededPatients = await Patient.insertMany(initialPatients);
 
   // 3. Seed Slots (50 slots total distributed among doctors)
-  // Doctor 1: 17 slots, Doctor 2: 17 slots, Doctor 3: 16 slots
   const slotCounts = [17, 17, 16];
-  let totalSlotsSeeded = 0;
+  const slotsToInsert = [];
 
-  // Base date starting tomorrow morning at 09:00 AM
   const baseDate = new Date();
   baseDate.setDate(baseDate.getDate() + 1);
   baseDate.setHours(9, 0, 0, 0);
@@ -122,7 +113,6 @@ export async function seedDB() {
     const count = slotCounts[i];
 
     for (let s = 0; s < count; s++) {
-      // 30 min per slot, jump to next day if past 5 PM (16:30 end)
       const dayOffset = Math.floor(s / 8);
       const slotIndexInDay = s % 8;
 
@@ -133,21 +123,32 @@ export async function seedDB() {
       const endTime = new Date(startTime);
       endTime.setMinutes(endTime.getMinutes() + 30);
 
-      await Slot.findOneAndUpdate(
-        { doctor: doc._id, startTime },
-        {
-          doctor: doc._id,
-          startTime,
-          endTime,
-          isBooked: false,
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
-      totalSlotsSeeded++;
+      slotsToInsert.push({
+        doctor: doc._id,
+        startTime,
+        endTime,
+        isBooked: false,
+      });
     }
   }
 
-  console.log(`Seeded ${totalSlotsSeeded} slots across ${seededDoctors.length} doctors.`);
+  await Slot.insertMany(slotsToInsert);
+
+  // Print Collection Counts
+  const doctorCount = await Doctor.countDocuments();
+  const patientCount = await Patient.countDocuments();
+  const slotCount = await Slot.countDocuments();
+  const appointmentCount = await Appointment.countDocuments();
+  const intakeCount = await Intake.countDocuments();
+  const traceCount = await AgentTrace.countDocuments();
+
+  console.log('Collection counts:');
+  console.log(`  doctors: ${doctorCount}`);
+  console.log(`  patients: ${patientCount}`);
+  console.log(`  slots: ${slotCount}`);
+  console.log(`  appointments: ${appointmentCount}`);
+  console.log(`  intakes: ${intakeCount}`);
+  console.log(`  agent_traces: ${traceCount}`);
   console.log('Database seeding complete!');
 }
 
@@ -155,7 +156,7 @@ if (process.argv[1] && process.argv[1].endsWith('seed.js')) {
   seedDB()
     .then(() => mongoose.connection.close())
     .catch((err) => {
-      console.error('Seed failed:', err);
+      console.error('Seed failed:', err.message);
       process.exit(1);
     });
 }

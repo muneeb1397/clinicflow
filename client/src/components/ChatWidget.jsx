@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-export default function ChatWidget({ apiBase = 'http://localhost:5000/api' }) {
+export default function ChatWidget({ apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000/api' }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);

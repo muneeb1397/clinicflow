@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-export default function StaffDashboard({ apiBase = 'http://localhost:5000/api' }) {
+export default function StaffDashboard({ apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000/api' }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: 'staff@clinic.com', password: 'demo123' });
   const [loginError, setLoginError] = useState('');
