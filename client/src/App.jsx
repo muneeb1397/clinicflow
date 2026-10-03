@@ -6,8 +6,9 @@ export default function App() {
   const [serverHealth, setServerHealth] = useState(null);
   const [currentView, setCurrentView] = useState('patient'); // 'patient' | 'staff'
 
+  const API = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
   useEffect(() => {
-    fetch('http://localhost:5000/health')
+    fetch(API.replace(/\/api$/, '') + '/health')
       .then((res) => res.json())
       .then((data) => setServerHealth(data))
       .catch((err) => console.log('Server not reachable yet:', err.message));
