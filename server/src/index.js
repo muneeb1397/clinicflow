@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import { connectDB } from './db.js';
 import toolsRouter from './routes/tools.js';
 import chatRouter from './routes/chat.js';
+import staffRouter from './routes/staff.js';
+import { initReminderCron } from './services/reminderService.js';
 
 dotenv.config();
 
@@ -18,13 +20,15 @@ app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
 
-// Tool & Chat endpoints
+// Tool, Chat, & Staff endpoints
 app.use('/api/tools', toolsRouter);
 app.use('/api', toolsRouter);
 app.use('/api', chatRouter);
+app.use('/api', staffRouter);
 
 async function startServer() {
   await connectDB();
+  initReminderCron();
   app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
   });

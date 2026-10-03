@@ -14,6 +14,7 @@ const appointmentSchema = new mongoose.Schema(
     notes: { type: String },
     summary: { type: String },
     approvedByStaff: { type: Boolean, default: false },
+    reminderSent: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

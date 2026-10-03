@@ -7,6 +7,7 @@ import { Doctor } from '../models/Doctor.js';
 import { Patient } from '../models/Patient.js';
 import { Appointment } from '../models/Appointment.js';
 import { Intake } from '../models/Intake.js';
+import { validateIntakeData } from '../schemas/intakeSchema.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -129,11 +130,22 @@ export async function bookSlot({ slotId, patientId, reason = 'General Consultati
 
 /**
  * 3. saveIntake
- * Saves patient symptoms & history into intakes collection.
+ * Saves patient symptoms, duration, history, allergies, meds into intakes collection.
+ * Validates output using Zod.
  */
-export async function saveIntake({ patientId, appointmentId, symptoms, medicalHistory = [], structuredData = {} } = {}) {
-  if (!patientId || !symptoms) {
-    const err = new Error('Invalid input: patientId and symptoms are required');
+export async function saveIntake({
+  patientId,
+  appointmentId,
+  symptoms = [],
+  duration = '1 day',
+  history = [],
+  allergies = [],
+  meds = [],
+  medicalHistory = [],
+  structuredData = {},
+} = {}) {
+  if (!patientId) {
+    const err = new Error('Invalid input: patientId is required');
     err.statusCode = 400;
     throw err;
   }
@@ -144,28 +156,50 @@ export async function saveIntake({ patientId, appointmentId, symptoms, medicalHi
     throw err;
   }
 
-  const symptomsList = Array.isArray(symptoms) ? symptoms : [symptoms];
-  const historyList = Array.isArray(medicalHistory) ? medicalHistory : [medicalHistory];
+  const symptomsList = Array.isArray(symptoms) ? symptoms : [symptoms].filter(Boolean);
+  const historyList = Array.isArray(history) && history.length > 0 ? history : Array.isArray(medicalHistory) ? medicalHistory : [];
+  const allergiesList = Array.isArray(allergies) ? allergies : [allergies].filter(Boolean);
+  const medsList = Array.isArray(meds) ? meds : [meds].filter(Boolean);
+
+  const rawIntake = {
+    symptoms: symptomsList,
+    duration: typeof duration === 'string' ? duration : '1 day',
+    history: historyList,
+    allergies: allergiesList,
+    meds: medsList,
+  };
+
+  const validation = validateIntakeData(rawIntake);
+  if (!validation.success) {
+    const err = new Error(`Intake Zod validation failed: ${JSON.stringify(validation.errors)}`);
+    err.statusCode = 400;
+    throw err;
+  }
 
   const intake = await Intake.create({
     patient: patientId,
     appointment: appointmentId && mongoose.Types.ObjectId.isValid(appointmentId) ? appointmentId : null,
-    symptoms: symptomsList,
-    medicalHistory: historyList,
+    symptoms: validation.data.symptoms,
+    duration: validation.data.duration,
+    history: validation.data.history,
+    allergies: validation.data.allergies,
+    meds: validation.data.meds,
     structuredData,
     status: 'completed',
   });
 
   return {
     success: true,
-    message: 'Intake data saved successfully',
+    message: 'Intake data validated with Zod and saved successfully',
     intake: {
       id: intake._id.toString(),
       patientId: intake.patient.toString(),
       appointmentId: intake.appointment ? intake.appointment.toString() : null,
       symptoms: intake.symptoms,
-      medicalHistory: intake.medicalHistory,
-      structuredData: intake.structuredData,
+      duration: intake.duration,
+      history: intake.history,
+      allergies: intake.allergies,
+      meds: intake.meds,
       status: intake.status,
     },
   };
