@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { connectDB } from './db.js';
+import toolsRouter from './routes/tools.js';
+import chatRouter from './routes/chat.js';
 
 dotenv.config();
 
@@ -15,6 +17,11 @@ app.use(express.json());
 app.get('/health', (req, res) => {
   res.json({ ok: true });
 });
+
+// Tool & Chat endpoints
+app.use('/api/tools', toolsRouter);
+app.use('/api', toolsRouter);
+app.use('/api', chatRouter);
 
 async function startServer() {
   await connectDB();

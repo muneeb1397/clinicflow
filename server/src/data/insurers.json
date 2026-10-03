@@ -1,0 +1,56 @@
+[
+  {
+    "policyNumber": "BC-987654",
+    "provider": "BlueCross",
+    "patientName": "Alice Smith",
+    "active": true,
+    "plan": "Gold PPO",
+    "copay": "$20",
+    "status": "covered"
+  },
+  {
+    "policyNumber": "AET-123456",
+    "provider": "Aetna",
+    "patientName": "Bob Jones",
+    "active": true,
+    "plan": "Silver HMO",
+    "copay": "$30",
+    "status": "covered"
+  },
+  {
+    "policyNumber": "CIG-456789",
+    "provider": "Cigna",
+    "patientName": "Charlie Brown",
+    "active": true,
+    "plan": "Bronze EPO",
+    "copay": "$40",
+    "status": "covered"
+  },
+  {
+    "policyNumber": "UH-112233",
+    "provider": "UnitedHealth",
+    "patientName": "Diana Prince",
+    "active": true,
+    "plan": "Platinum PPO",
+    "copay": "$15",
+    "status": "covered"
+  },
+  {
+    "policyNumber": "KP-778899",
+    "provider": "Kaiser",
+    "patientName": "Evan Wright",
+    "active": true,
+    "plan": "Basic HMO",
+    "copay": "$25",
+    "status": "covered"
+  },
+  {
+    "policyNumber": "EXP-000111",
+    "provider": "Aetna",
+    "patientName": "Inactive User",
+    "active": false,
+    "plan": "Expired Plan",
+    "copay": "$0",
+    "status": "expired"
+  }
+]

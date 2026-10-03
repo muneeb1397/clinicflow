@@ -1,0 +1,15 @@
+{
+  "name": "clinic-front-desk-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "seed": "npm --prefix server run seed",
+    "test:seed": "node server/src/testSeed.js",
+    "test:tools": "node server/src/testTools.js",
+    "test:router": "node server/src/testRouter.js",
+    "start": "npm --prefix server start"
+  }
+}
